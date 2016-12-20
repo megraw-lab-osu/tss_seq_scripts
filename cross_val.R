@@ -163,7 +163,7 @@ set.seed(55)
 load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups.rdat")
 
 # define classes
-classed_features_diffs_wide <- add_class(all_features_diffs_wide, qval_thresh = 0.05, fold_thres = 3)
+classed_features_diffs_wide <- add_class(all_features_diffs_wide, qval_thresh = 0.05, fold_thres = 4)
 print("Overall class sizes:")
 print(table(classed_features_diffs_wide$class))
 
