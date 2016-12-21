@@ -37,7 +37,7 @@ add_class <- function(input, qval_thresh, fold_thresh) {
 # rows will be randomized first
 # returns a list; first el being a list of folds (data frames), second being the final test data frame
 split_data <- function(input, percent_train = 0.8, folds = 5) {
-  randomized_features_diffs_wide <- input[order(runif(nrow(classed_features_diffs_wide))), ]
+  randomized_features_diffs_wide <- input[order(runif(nrow(input))), ]
   train_index <- as.integer(percent_train * nrow(randomized_features_diffs_wide))
   train_features_diffs_wide <- randomized_features_diffs_wide[seq(1, train_index), ]
   final_test_features_diffs_wide <- randomized_features_diffs_wide[seq(train_index + 1, nrow(randomized_features_diffs_wide)), ]
@@ -59,7 +59,17 @@ folds_to_train_validate_test <- function(test_fold_name, all_folds) {
   validation_fold <- all_folds[[validation_fold_name]]
   other_folds <- all_folds[!names(all_folds) %in% c(test_fold_name, validation_fold_name)]
   other_folds_bound <- do.call(rbind, other_folds)
-  ret_list <- list(test_set = test_fold, validation_set = validation_fold, train_set = other_folds_bound)
+  ret_list <- list(train_set = other_folds_bound, test_set = test_fold, validation_set = validation_fold)
+  return(ret_list)
+}
+
+# given a name for a fold, and a (named) list of all the folds, extracts
+# that name as the test, the rest as training (collapsed with rbind)
+folds_to_train_test <- function(test_fold_name, all_folds) {
+  test_fold <- all_folds[[test_fold_name]]
+  other_folds <- all_folds[!names(all_folds) %in% c(test_fold_name)]
+  other_folds_bound <- do.call(rbind, other_folds)
+  ret_list <- list(train_set = other_folds_bound, test_set = test_fold)
   return(ret_list)
 }
 
@@ -74,10 +84,10 @@ run_and_validate_model <- function(param, train_validate) {
   # hm, we gotta get rid of the cols that are all identical if there are any (0s sometimes)
   # but will this F it up? Might make comparisons after the fact tricky...
   # also we gotta not do this determination based on the "class" column
-  train_keep_logical <- !unlist(lapply(train_set[,colnames(train_set) != "class"], function(col){sd(col) == 0}))
-  train_keep_logical <- c(train_keep_logical, TRUE)
-  train_set <- train_set[, train_keep_logical]
-  test_set <- test_set[, train_keep_logical]
+  ##train_keep_logical <- !unlist(lapply(train_set[,colnames(train_set) != "class"], function(col){sd(col) == 0}))
+  ##train_keep_logical <- c(train_keep_logical, TRUE)
+  ##train_set <- train_set[, train_keep_logical]
+  ##test_set <- test_set[, train_keep_logical]
   
   x_train_set <- train_set[, !colnames(train_set) %in% "class"]
   class_train_set <- train_set$class
@@ -96,7 +106,7 @@ run_and_validate_model <- function(param, train_validate) {
                      cost = param,
                      bias = TRUE,  # ?? (recommended by vignette)
                      # cross = 10, # built-in cross validation; probably better to do it ourselves
-                     verbose = FALSE)
+                     verbose = TRUE)
   
   coefficients <- model$W
   # drop bias coefficient
@@ -155,7 +165,7 @@ n_fold_cross <- function(train_folds, possible_params) {
 ####################################
 
 # chosen by fair die roll, gauranteed to be random
-set.seed(55)
+#set.seed(56) # 55 originally
 
 
 # load the features and differential expression data
@@ -180,36 +190,43 @@ classed_features_class <- classed_features_diffs_wide[, !colnames(classed_featur
 
 
 # split into 80% 8-fold set, and 20% final test
-folds_final_test <- split_data(classed_features_class, percent_train = 0.8, folds = 8)
+folds_final_test <- split_data(classed_features_class, percent_train = 0.75, folds = 8)
 train_folds <- folds_final_test$train_folds
 
+pstar_avg <- 0.0005
 
 # make it all parallel...
-library(parallel)
-cl <- makeCluster(6)
-clusterExport(cl, list("folds_to_train_validate_test", "train_folds",
-                       "run_and_validate_model"))
-lapply <- function(...) {parLapply(cl, ...)}
+# library(parallel)
+# cl <- makeCluster(6)
+# clusterExport(cl, list("folds_to_train_validate_test", "train_folds",
+#                        "run_and_validate_model"))
+# lapply <- function(...) {parLapply(cl, ...)}
+# 
+# 
+# # we'll try a bunch of different params 
+# possible_params <- as.list(10^seq(-6,-1,0.2))
+# print("trying params:")
+# print(unlist(possible_params))
+# names(possible_params) <- as.character(possible_params)
+# 
+# 
+# bests_by_fold <- n_fold_cross(train_folds, possible_params)
+# 
+# # make it into a table
+# bests_by_fold_table <- map_df(bests_by_fold, I)
+# print(bests_by_fold_table)
+# # geometric mean: 0.0003651741
+# # arithmetic mean: 0.0007218799
+# pstar_avg <- mean(bests_by_fold_table$best_param)
 
 
-# we'll try a bunch of different params 
-possible_params <- as.list(10^seq(-6,-1,0.2))
-print("trying params:")
-print(unlist(possible_params))
-names(possible_params) <- as.character(possible_params)
+#all_train <- do.call(rbind, folds_final_test$train_folds)
+#final_test <- folds_final_test$final_test
+#final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
+#str(final_res)
 
+final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
+fold_names <- names(final_folds)
+fold_results <- lapply(fold_names, function(fold_name) {train_test_sets <- folds_to_train_test(fold_name, final_folds); 
+                                                        fold_result <- run_and_validate_model(pstar_avg, train_test_sets)})
 
-bests_by_fold <- n_fold_cross(train_folds, possible_params)
-
-# make it into a table
-bests_by_fold_table <- map_df(bests_by_fold, I)
-print(bests_by_fold_table)
-# geometric mean: 0.0003651741
-# arithmetic mean: 0.0007218799
-pstar_avg <- mean(bests_by_fold_table$best_param)
-
-
-all_train <- do.call(rbind, folds_final_test$train_folds)
-final_test <- folds_final_test$final_test
-final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
-str(final_res)
