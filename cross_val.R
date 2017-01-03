@@ -13,7 +13,7 @@ rm(list = ls())
 options(scipen=999)
 
 
-
+setwd("~/Documents/cgrb/pis/Megraw/tss_seq_scripts/")
 
 
 geometric_mean <- function(x) exp(mean(log(x)))
@@ -84,10 +84,10 @@ run_and_validate_model <- function(param, train_validate) {
   # hm, we gotta get rid of the cols that are all identical if there are any (0s sometimes)
   # but will this F it up? Might make comparisons after the fact tricky...
   # also we gotta not do this determination based on the "class" column
-  ##train_keep_logical <- !unlist(lapply(train_set[,colnames(train_set) != "class"], function(col){sd(col) == 0}))
-  ##train_keep_logical <- c(train_keep_logical, TRUE)
-  ##train_set <- train_set[, train_keep_logical]
-  ##test_set <- test_set[, train_keep_logical]
+  train_keep_logical <- !unlist(lapply(train_set[,colnames(train_set) != "class"], function(col){sd(col) == 0}))
+  train_keep_logical <- c(train_keep_logical, TRUE)
+  train_set <- train_set[, train_keep_logical]
+  test_set <- test_set[, train_keep_logical]
   
   x_train_set <- train_set[, !colnames(train_set) %in% "class"]
   class_train_set <- train_set$class
@@ -135,19 +135,35 @@ find_pstar <- function(fold_name, params_list, folds_list) {
   train_validate <- train_valid_test[c("train_set", "validation_set")]
 
   param_results <- lapply(params_list, run_and_validate_model, train_validate)
+
   best_result <- param_results[[1]]
   best_auroc <- param_results[[1]]$auroc
   for(result in param_results) {
     auroc <- result$auroc
+    auprc <- result$auprc
     if(auroc > best_auroc) {
       best_result <- result
       best_auroc <- auroc
     }
   }
+
+  all_params <- unlist(params_list)
+  all_fold_names <- rep(fold_name, length(all_params))
+  all_aurocs <- unlist(lapply(param_results, function(x) { return(x$auroc) } ))
+  all_auprcs <- unlist(lapply(param_results, function(x) { return(x$auprc) } ))
+  within_params_list <- list(fold_name = all_fold_names, param = all_params, auroc = all_aurocs, auprcs = all_auprcs)
   
   best_param <- best_result$param
   test_result <- run_and_validate_model(best_param, train_valid_test[c("train_set", "test_set")])
-  ret_list <- list(fold_name = fold_name, best_param = best_param, best_auroc = best_result$auroc, best_auprc = best_result$auprc, test_auroc = test_result$auroc, test_auprc = test_result$auprc)
+  ret_list <- list(fold_name = fold_name, 
+                   best_param = best_param, 
+                   best_auroc = best_result$auroc, 
+                   best_auprc = best_result$auprc, 
+                   test_auroc = test_result$auroc, 
+                   test_auprc = test_result$auprc, 
+                   mean_auroc = mean(all_aurocs), 
+                   sd_auroc = sd(all_aurocs), 
+                   within_params_list = within_params_list)
   return(ret_list)
   
 }
@@ -165,7 +181,7 @@ n_fold_cross <- function(train_folds, possible_params) {
 ####################################
 
 # chosen by fair die roll, gauranteed to be random
-#set.seed(56) # 55 originally
+set.seed(55) # 55 originally
 
 
 # load the features and differential expression data
@@ -190,34 +206,42 @@ classed_features_class <- classed_features_diffs_wide[, !colnames(classed_featur
 
 
 # split into 80% 8-fold set, and 20% final test
-folds_final_test <- split_data(classed_features_class, percent_train = 0.75, folds = 8)
+folds_final_test <- split_data(classed_features_class, percent_train = 0.8, folds = 8)
 train_folds <- folds_final_test$train_folds
 
-pstar_avg <- 0.0005
+# pstar_avg <- 0.0005
 
-# make it all parallel...
-# library(parallel)
-# cl <- makeCluster(6)
-# clusterExport(cl, list("folds_to_train_validate_test", "train_folds",
-#                        "run_and_validate_model"))
-# lapply <- function(...) {parLapply(cl, ...)}
-# 
-# 
-# # we'll try a bunch of different params 
-# possible_params <- as.list(10^seq(-6,-1,0.2))
-# print("trying params:")
-# print(unlist(possible_params))
-# names(possible_params) <- as.character(possible_params)
-# 
-# 
-# bests_by_fold <- n_fold_cross(train_folds, possible_params)
-# 
-# # make it into a table
-# bests_by_fold_table <- map_df(bests_by_fold, I)
-# print(bests_by_fold_table)
-# # geometric mean: 0.0003651741
-# # arithmetic mean: 0.0007218799
-# pstar_avg <- mean(bests_by_fold_table$best_param)
+# # make it all parallel...
+library(parallel)
+cl <- makeCluster(6)
+clusterExport(cl, list("folds_to_train_validate_test", "train_folds",
+                       "run_and_validate_model"))
+lapply <- function(...) {parLapply(cl, ...)}
+
+
+# we'll try a bunch of different params
+#possible_params <- as.list(10^seq(-6,-1,0.2))
+possible_params <- as.list(seq(0.00005, 0.002, 0.00005))
+
+print("trying params:")
+print(unlist(possible_params))
+names(possible_params) <- as.character(possible_params)
+
+
+bests_by_fold <- n_fold_cross(train_folds, possible_params)
+
+# make it into a table
+# grab everything but the "within_params_list" entries and build a table
+bests_by_fold_table <- map_df(bests_by_fold, .f = function(x) {return(x[names(x) != "within_params_list"])} )
+print(bests_by_fold_table)
+
+# grab the "within_params_list" entries and build a table
+within_folds_table <- map_df(map(bests_by_fold, "within_params_list"), I)
+print(as.data.frame(within_folds_table), row.names = FALSE)
+
+# geometric mean: 0.0003651741
+# arithmetic mean: 0.0007218799
+pstar_avg <- mean(bests_by_fold_table$best_param)
 
 
 #all_train <- do.call(rbind, folds_final_test$train_folds)
@@ -225,8 +249,8 @@ pstar_avg <- 0.0005
 #final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
 #str(final_res)
 
-final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
-fold_names <- names(final_folds)
-fold_results <- lapply(fold_names, function(fold_name) {train_test_sets <- folds_to_train_test(fold_name, final_folds); 
-                                                        fold_result <- run_and_validate_model(pstar_avg, train_test_sets)})
+#final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
+#fold_names <- names(final_folds)
+#fold_results <- lapply(fold_names, function(fold_name) {train_test_sets <- folds_to_train_test(fold_name, final_folds); 
+#                                                        fold_result <- run_and_validate_model(pstar_avg, train_test_sets)})
 
