@@ -13,7 +13,6 @@ rm(list = ls())
 options(scipen=999)
 
 
-setwd("~/Documents/cgrb/pis/Megraw/tss_seq_scripts/")
 
 
 geometric_mean <- function(x) exp(mean(log(x)))
@@ -102,7 +101,7 @@ run_and_validate_model <- function(param, train_validate) {
   
   model <- LiblineaR::LiblineaR(data = x_train_set_scaled, 
                      target = class_train_set,
-                     type = 7,   # L2 regularized logistic regression (dual)
+                     type = 7,   # L2 regularized logistic regression (dual) = 7
                      cost = param,
                      bias = TRUE,  # ?? (recommended by vignette)
                      # cross = 10, # built-in cross validation; probably better to do it ourselves
@@ -183,13 +182,17 @@ n_fold_cross <- function(train_folds, possible_params) {
 # chosen by fair die roll, gauranteed to be random
 set.seed(55) # 55 originally
 
+setwd("~/Documents/cgrb/pis/Megraw/tss_seq_scripts/")
+
 
 # load the features and differential expression data
 # into all_features_diffs_wide
-load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups.rdat")
-
+load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups_overallOC.rdat")
+# all_features_diffs_wide <- all_features_diffs_wide[,!colnames(all_features_diffs_wide) %in% c("OC_P_OVERALL_ROOT", "OC_P_OVERALL_LEAF")]
 # define classes
 classed_features_diffs_wide <- add_class(all_features_diffs_wide, qval_thresh = 0.05, fold_thres = 4)
+# NAs were introduced because many TSSs have overall OC features but not others
+classed_features_diffs_wide <- classed_features_diffs_wide[complete.cases(classed_features_diffs_wide), ]
 print("Overall class sizes:")
 print(table(classed_features_diffs_wide$class))
 
@@ -206,7 +209,7 @@ classed_features_class <- classed_features_diffs_wide[, !colnames(classed_featur
 
 
 # split into 80% 8-fold set, and 20% final test
-folds_final_test <- split_data(classed_features_class, percent_train = 0.8, folds = 8)
+folds_final_test <- split_data(classed_features_class, percent_train = 0.8, folds = 5)
 train_folds <- folds_final_test$train_folds
 
 # pstar_avg <- 0.0005
@@ -221,7 +224,7 @@ lapply <- function(...) {parLapply(cl, ...)}
 
 # we'll try a bunch of different params
 #possible_params <- as.list(10^seq(-6,-1,0.2))
-possible_params <- as.list(seq(0.00005, 0.002, 0.00005))
+possible_params <- as.list(seq(0.00005, 0.001, 0.00005))
 
 print("trying params:")
 print(unlist(possible_params))
@@ -238,16 +241,21 @@ print(bests_by_fold_table)
 # grab the "within_params_list" entries and build a table
 within_folds_table <- map_df(map(bests_by_fold, "within_params_list"), I)
 print(as.data.frame(within_folds_table), row.names = FALSE)
+write.table(within_folds_table, file = "within_folds_param_vs_aurocs.txt", quote = F, sep = "\t", row.names = F)
+
+df <- within_folds_table
+df$fold_name <- as.character(df$fold_name)
+ggplot(df) + geom_line(aes(x = param, y = auroc, color = fold_name))
 
 # geometric mean: 0.0003651741
 # arithmetic mean: 0.0007218799
 pstar_avg <- mean(bests_by_fold_table$best_param)
 
 
-#all_train <- do.call(rbind, folds_final_test$train_folds)
-#final_test <- folds_final_test$final_test
-#final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
-#str(final_res)
+all_train <- do.call(rbind, folds_final_test$train_folds)
+final_test <- folds_final_test$final_test
+final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
+str(final_res)
 
 #final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
 #fold_names <- names(final_folds)
