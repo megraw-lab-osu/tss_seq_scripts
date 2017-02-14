@@ -233,6 +233,7 @@ names(possible_params) <- as.character(possible_params)
 
 bests_by_fold <- n_fold_cross(train_folds, possible_params)
 
+
 # make it into a table
 # grab everything but the "within_params_list" entries and build a table
 bests_by_fold_table <- map_df(bests_by_fold, .f = function(x) {return(x[names(x) != "within_params_list"])} )
@@ -252,13 +253,96 @@ ggplot(df) + geom_line(aes(x = param, y = auroc, color = fold_name))
 pstar_avg <- mean(bests_by_fold_table$best_param)
 
 
-all_train <- do.call(rbind, folds_final_test$train_folds)
-final_test <- folds_final_test$final_test
-final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
-str(final_res)
+#all_train <- do.call(rbind, folds_final_test$train_folds)
+#final_test <- folds_final_test$final_test
+#final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
+#str(final_res)
 
 #final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
 #fold_names <- names(final_folds)
 #fold_results <- lapply(fold_names, function(fold_name) {train_test_sets <- folds_to_train_test(fold_name, final_folds); 
 #                                                        fold_result <- run_and_validate_model(pstar_avg, train_test_sets)})
+
+
+# let's look at how the coeffs_df varies over folds...
+# grab out each coeffs_df
+coeffs_dfs_list <- map(bests_by_fold, function(x) {return(x$test_coeffs_df)})
+# assign a name to each df
+for(i in seq(1, length(coeffs_dfs_list))) {
+  coeffs_dfs_list[[i]]$fold_num <- paste("fold", i, sep = "_")
+}
+
+# turn it into one big one
+coeffs_df <- do.call(rbind, coeffs_dfs_list)
+# compute the average coefficient for each feature
+coeffs_df_means_by_feature <- coeffs_df %>% group_by(Feature) %>% summarize(., mean_coeff = mean(coefficients))
+
+# get a per-feature row of coefficients for each feature
+coeffs_df_wide <- spread(coeffs_df, fold_num, coefficients)
+# merge in the averages
+coeffs_df_wide <- merge(coeffs_df_wide, coeffs_df_means_by_feature)
+
+# write it to a table for valerie
+save(coeffs_df_wide, file = "folds_coeffs_df_wide.rdat")
+
+# put it back into a long table for plotting/extracting
+coeffs_df <- gather(coeffs_df_wide, fold_num, coefficients, -Feature, -mean_coeff)
+
+# let's just grab the top 5% of features by average coefficient
+#sub_coeffs_df <- coeffs_df[coeffs_df$mean_coeff > quantile(coeffs_df$mean_coeff, 0.99), ]
+#sub_coeffs_df_wide <- coeffs_df_wide[coeffs_df_wide$mean_coeff > quantile(coeffs_df_wide$mean_coeff, 0.99), ]
+select_by_top <- function(x, percentile) {
+  # there are some NA coefficients because for some folds, there isn't enough variance
+  # in the columns to include them in the analysis (ed: how the F do you spell that word?)
+  # we we remove them before doing the quantile shtick
+  x <- x[!is.na(x$coefficients),]
+  return(x[abs(x$coefficients) > quantile(abs(x$coefficients), percentile), ])
+}
+sub_coeffs_df <- coeffs_df %>% group_by(., fold_num) %>% do(., select_by_top(., 0.995))
+sub_coeffs_counts <- sub_coeffs_df %>% group_by(Feature) %>% summarize(., count_occurances = length(coefficients))
+sub_coeffs_df <- merge(sub_coeffs_df, sub_coeffs_counts, all = T)
+sub_coeffs_df_wide <- spread(sub_coeffs_df, fold_num, coefficients)
+
+
+library(plotly)
+p <- ggplot() +
+  geom_point(data = sub_coeffs_df, mapping = aes(x = fold_num, y = coefficients, color = Feature)) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_1", xend = "fold_2", y = fold_1, yend = fold_2,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_1", xend = "fold_3", y = fold_1, yend = fold_3,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_1", xend = "fold_4", y = fold_1, yend = fold_4,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_1", xend = "fold_5", y = fold_1, yend = fold_5,
+                                                        color = Feature), alpha = 0.1) +
+  
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_2", xend = "fold_3", y = fold_2, yend = fold_3,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_2", xend = "fold_4", y = fold_2, yend = fold_4,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_2", xend = "fold_5", y = fold_2, yend = fold_5,
+                                                        color = Feature), alpha = 0.1) +
+  
+  
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_3", xend = "fold_4", y = fold_3, yend = fold_4,
+                                                        color = Feature), alpha = 0.1) +
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_3", xend = "fold_5", y = fold_3, yend = fold_5,
+                                                        color = Feature), alpha = 0.1) +
+  
+  geom_segment(data = sub_coeffs_df_wide, mapping = aes(x = "fold_4", xend = "fold_5", y = fold_4, yend = fold_5,
+                                                        color = Feature), alpha = 0.1) +
+  #expand_limits(y = 0) +
+  theme(legend.position = "none") +
+  facet_grid(count_occurances ~ .) +
+  guides(color = "none")
+plot(p)
+
+x <- plot_ly(username = "oneilsh", key = "fb7llMt4tf0sk5eige0v")
+ggplotly(p)
+plotly_POST(p)
+
+
+
+
+
 
