@@ -10,7 +10,7 @@ library(parallel)
 
 
 rm(list = ls())
-options(scipen=999)
+#options(scipen=999)
 
 
 
@@ -85,6 +85,8 @@ run_and_validate_model <- function(param, train_validate) {
   # also we gotta not do this determination based on the "class" column
   train_keep_logical <- !unlist(lapply(train_set[,colnames(train_set) != "class"], function(col){sd(col) == 0}))
   train_keep_logical <- c(train_keep_logical, TRUE)
+  print(length(train_keep_logical))
+  print(dim(train_set))
   train_set <- train_set[, train_keep_logical]
   test_set <- test_set[, train_keep_logical]
   
@@ -115,7 +117,8 @@ run_and_validate_model <- function(param, train_validate) {
   # produce a confusion matrix
   confusion_matrix <- table(predictions = p$predictions, actuals = class_test_set)
   
-  probabilities <- p$probabilities
+  probabilities <- as.data.frame(p$probabilities)
+  rownames(p$probabilities) <- rownames(test_set)
 
   coeffs_df <- data.frame(coefficients, Feature = colnames(x_train_set_scaled), stringsAsFactors = FALSE)
   auroc <- PRROC::roc.curve(probabilities[,"1"], weights.class0 = class_test_set, curve = TRUE)$auc
@@ -155,11 +158,15 @@ find_pstar <- function(fold_name, params_list, folds_list) {
   best_param <- best_result$param
   test_result <- run_and_validate_model(best_param, train_valid_test[c("train_set", "test_set")])
   ret_list <- list(fold_name = fold_name, 
+                   train_set = train_valid_test$train_set,
+                   test_set = train_valid_test$test_set,
+                   best_model = best_result$model,
                    best_param = best_param, 
                    best_auroc = best_result$auroc, 
                    best_auprc = best_result$auprc, 
                    test_auroc = test_result$auroc, 
                    test_auprc = test_result$auprc, 
+                   test_coeffs_df = test_result$coeffs_df,
                    mean_auroc = mean(all_aurocs), 
                    sd_auroc = sd(all_aurocs), 
                    within_params_list = within_params_list)
@@ -188,6 +195,7 @@ setwd("~/Documents/cgrb/pis/Megraw/tss_seq_scripts/")
 # load the features and differential expression data
 # into all_features_diffs_wide
 load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups_overallOC.rdat")
+rownames(all_features_diffs_wide) <- all_features_diffs_wide$tss_name
 # all_features_diffs_wide <- all_features_diffs_wide[,!colnames(all_features_diffs_wide) %in% c("OC_P_OVERALL_ROOT", "OC_P_OVERALL_LEAF")]
 # define classes
 classed_features_diffs_wide <- add_class(all_features_diffs_wide, qval_thresh = 0.05, fold_thres = 4)
@@ -236,7 +244,7 @@ bests_by_fold <- n_fold_cross(train_folds, possible_params)
 
 # make it into a table
 # grab everything but the "within_params_list" entries and build a table
-bests_by_fold_table <- map_df(bests_by_fold, .f = function(x) {return(x[names(x) != "within_params_list"])} )
+bests_by_fold_table <- map_df(bests_by_fold, .f = function(x) {return(x[!names(x) %in% c("within_params_list", "test_coeffs_df", "train_set", "test_set", "best_model")])} )
 print(bests_by_fold_table)
 
 # grab the "within_params_list" entries and build a table
@@ -253,10 +261,18 @@ ggplot(df) + geom_line(aes(x = param, y = auroc, color = fold_name))
 pstar_avg <- mean(bests_by_fold_table$best_param)
 
 
-#all_train <- do.call(rbind, folds_final_test$train_folds)
-#final_test <- folds_final_test$final_test
-#final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
-#str(final_res)
+all_train <- do.call(rbind, folds_final_test$train_folds)
+final_test <- folds_final_test$final_test
+final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
+str(final_res)
+
+test_calls_features <- cbind(final_res$model$probabilities, final_res$model$predictions)
+colnames(test_calls_features)[1] <- "prob_class_0"
+colnames(test_calls_features)[2] <- "prob_class_1"
+colnames(test_calls_features)[3] <- "class_call"
+
+all_input_test_rows <- classed_features_diffs_wide[rownames(classed_features_diffs_wide) %in% rownames(final_test), ]
+
 
 #final_folds <- split_data(classed_features_class, percent_train = 1.0, folds = 8)[[1]]
 #fold_names <- names(final_folds)
@@ -291,18 +307,29 @@ coeffs_df <- gather(coeffs_df_wide, fold_num, coefficients, -Feature, -mean_coef
 # let's just grab the top 5% of features by average coefficient
 #sub_coeffs_df <- coeffs_df[coeffs_df$mean_coeff > quantile(coeffs_df$mean_coeff, 0.99), ]
 #sub_coeffs_df_wide <- coeffs_df_wide[coeffs_df_wide$mean_coeff > quantile(coeffs_df_wide$mean_coeff, 0.99), ]
+# if percentile > 1, select top n
 select_by_top <- function(x, percentile) {
   # there are some NA coefficients because for some folds, there isn't enough variance
   # in the columns to include them in the analysis (ed: how the F do you spell that word?)
   # we we remove them before doing the quantile shtick
-  x <- x[!is.na(x$coefficients),]
-  return(x[abs(x$coefficients) > quantile(abs(x$coefficients), percentile), ])
+  if(percentile < 1) {
+    x <- x[!is.na(x$coefficients),]
+    return(x[abs(x$coefficients) > quantile(abs(x$coefficients), percentile), ])
+  } else {
+    x <- x[!is.na(x$coefficients),]
+    x <- x[rev(order(abs(x$coefficients))), ]
+    return(x[seq(1,percentile),])
+  }
 }
-sub_coeffs_df <- coeffs_df %>% group_by(., fold_num) %>% do(., select_by_top(., 0.995))
+sub_coeffs_df <- coeffs_df %>% group_by(., fold_num) %>% do(., select_by_top(., 20))
 sub_coeffs_counts <- sub_coeffs_df %>% group_by(Feature) %>% summarize(., count_occurances = length(coefficients))
 sub_coeffs_df <- merge(sub_coeffs_df, sub_coeffs_counts, all = T)
 sub_coeffs_df_wide <- spread(sub_coeffs_df, fold_num, coefficients)
 
+# for Molly, table form
+sub_coeffs_df_wide <- sub_coeffs_df_wide[rev(order(sub_coeffs_df_wide$count_occurances)),]
+write.table(sub_coeffs_df_wide[,c("Feature", "count_occurances")], file = "top20_count_fold_occurances.txt",
+            quote = F, sep = "\t", row.names = F)
 
 library(plotly)
 p <- ggplot() +
@@ -337,12 +364,29 @@ p <- ggplot() +
   guides(color = "none")
 plot(p)
 
-x <- plot_ly(username = "oneilsh", key = "fb7llMt4tf0sk5eige0v")
-ggplotly(p)
-plotly_POST(p)
+#x <- plot_ly(username = "oneilsh", key = "fb7llMt4tf0sk5eige0v")
+#ggplotly(p)
+#plotly_POST(p)
 
 
 
+# let's build a data frame of probability/fold names
+folds_probs_stack <- rstack()
+for(fold_num in seq(1,length(bests_by_fold))) {
+  probs <- bests_by_fold[[fold_num]]$best_model$probabilities
+  probs <- as.data.frame(probs)
+  colnames(probs) <- c("prob_0", "prob_1")
+  probs$fold_num <- fold_num
+  folds_probs_stack <- insert_top(folds_probs_stack, probs)
+}
+folds_probs_df <- do.call(rbind, as.list(folds_probs_stack))
+
+print(head(folds_probs_df))
+
+
+folds_probs_df$tss_name <- rownames(folds_probs_df)
+classed_diffs_info_calls <- merge(classed_diffs_info, folds_probs_df)
+write.table(classed_diffs_info_calls, file = "classed_diffs_info_calls.txt", quote = F, sep = "\t", row.names = F)
 
 
 
