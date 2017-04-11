@@ -14,7 +14,6 @@ rm(list = ls())
 
 
 
-
 geometric_mean <- function(x) exp(mean(log(x)))
 
 
@@ -130,8 +129,10 @@ run_and_validate_model <- function(param, train_validate) {
 }
 
 
-# given a fold name, uses it to extract train, validate, test sets,
+# given a fold name (length-1 character vector), uses it to extract train, validate, test sets,
 # also for each param in the params list, tries that param.
+# folds list is a list of data frames
+# returns a list with lots of goodies
 find_pstar <- function(fold_name, params_list, folds_list) {
   train_valid_test <- folds_to_train_validate_test(fold_name, folds_list)
   train_validate <- train_valid_test[c("train_set", "validation_set")]
@@ -174,8 +175,13 @@ find_pstar <- function(fold_name, params_list, folds_list) {
   
 }
 
+
+# train_folds is a named list of data frames, possible_params is a named list of param values
+# breaks out computation by fold 
+# returns a list (of lists) for each fold with lots of goodies
 n_fold_cross <- function(train_folds, possible_params) {
   train_folds_names <- as.list(names(train_folds))
+  print(train_folds_names)
   bests_by_fold <- lapply(train_folds_names, find_pstar, possible_params, train_folds)
   return(bests_by_fold)
 }
@@ -194,12 +200,25 @@ setwd("~/Documents/cgrb/pis/Megraw/tss_seq_scripts/")
 
 # load the features and differential expression data
 # into all_features_diffs_wide
-load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups_overallOC.rdat")
+load("big_merged_roe_pseudoCounts_0.01_PEATcore_Hughes_NoDups_overallOC_0_-100_with_tiled.rdat")
+
+### : remove all but tiled features
+#all_features_diffs_wide <- all_features_diffs_wide[, !(grepl("(FWD|REV)", colnames(all_features_diffs_wide)) & !grepl("tile", colnames(all_features_diffs_wide))) ]
+### or, remove tiled features
+all_features_diffs_wide <- all_features_diffs_wide[, !grepl("tile100", colnames(all_features_diffs_wide)) ]
+
+# set rownames to tss names
 rownames(all_features_diffs_wide) <- all_features_diffs_wide$tss_name
+
+# debug
 # all_features_diffs_wide <- all_features_diffs_wide[,!colnames(all_features_diffs_wide) %in% c("OC_P_OVERALL_ROOT", "OC_P_OVERALL_LEAF")]
-# define classes
+
+# define classes, get rid of unclassed columns
 classed_features_diffs_wide <- add_class(all_features_diffs_wide, qval_thresh = 0.05, fold_thres = 4)
+
+
 # NAs were introduced because many TSSs have overall OC features but not others
+## todo: why is this again?
 classed_features_diffs_wide <- classed_features_diffs_wide[complete.cases(classed_features_diffs_wide), ]
 print("Overall class sizes:")
 print(table(classed_features_diffs_wide$class))
@@ -209,6 +228,8 @@ print(table(classed_features_diffs_wide$class))
 diffs_colnames <- c("gene_id", "pval", "qval", "b", "se_b", "mean_obs", "var_obs", 
                     "tech_var", "sigma_sq", "smooth_sigma_sq", "final_sigma_sq", 
                     "tss_name", "chr", "loc", "offset?")
+
+
 # differential expression data
 classed_diffs_info <- classed_features_diffs_wide[, diffs_colnames]
 # features and class only
@@ -227,6 +248,7 @@ library(parallel)
 cl <- makeCluster(6)
 clusterExport(cl, list("folds_to_train_validate_test", "train_folds",
                        "run_and_validate_model"))
+# replace lapply with parLapply
 lapply <- function(...) {parLapply(cl, ...)}
 
 
@@ -240,27 +262,50 @@ names(possible_params) <- as.character(possible_params)
 
 
 bests_by_fold <- n_fold_cross(train_folds, possible_params)
+str(bests_by_fold[1])
 
+
+################################
+####### Cross val done.
+################################
+
+######### Line plots start
 
 # make it into a table
 # grab everything but the "within_params_list" entries and build a table
+# map_df -> turns some parts of a list into a dataframe - from purrr library
 bests_by_fold_table <- map_df(bests_by_fold, .f = function(x) {return(x[!names(x) %in% c("within_params_list", "test_coeffs_df", "train_set", "test_set", "best_model")])} )
 print(bests_by_fold_table)
 
 # grab the "within_params_list" entries and build a table
 within_folds_table <- map_df(map(bests_by_fold, "within_params_list"), I)
 print(as.data.frame(within_folds_table), row.names = FALSE)
-write.table(within_folds_table, file = "within_folds_param_vs_aurocs.txt", quote = F, sep = "\t", row.names = F)
+#write.table(within_folds_table, file = "within_folds_param_vs_aurocs.txt", quote = F, sep = "\t", row.names = F)
 
 df <- within_folds_table
 df$fold_name <- as.character(df$fold_name)
-ggplot(df) + geom_line(aes(x = param, y = auroc, color = fold_name))
+ggplot(df) + geom_line(aes(x = param, y = auroc, color = fold_name)) +
+  expand_limits(y = c(0.80, 1.0)) +
+  ggtitle("ROE features and Tiled features") 
 
+
+######### Line plots end
+
+
+######### Run on final held out test
 # geometric mean: 0.0003651741
 # arithmetic mean: 0.0007218799
 pstar_avg <- mean(bests_by_fold_table$best_param)
+pstar_avg <- 0.0005
 
 
+###########################
+### Random explorations below
+###########################
+
+
+
+######## folds_final_test is a list of 2; first is a list of data frames (folds), second is the held out df
 all_train <- do.call(rbind, folds_final_test$train_folds)
 final_test <- folds_final_test$final_test
 final_res <- run_and_validate_model(pstar_avg, list(all_train, final_test))
@@ -328,8 +373,8 @@ sub_coeffs_df_wide <- spread(sub_coeffs_df, fold_num, coefficients)
 
 # for Molly, table form
 sub_coeffs_df_wide <- sub_coeffs_df_wide[rev(order(sub_coeffs_df_wide$count_occurances)),]
-write.table(sub_coeffs_df_wide[,c("Feature", "count_occurances")], file = "top20_count_fold_occurances.txt",
-            quote = F, sep = "\t", row.names = F)
+#write.table(sub_coeffs_df_wide[,c("Feature", "count_occurances")], file = "top20_count_fold_occurances.txt",
+#            quote = F, sep = "\t", row.names = F)
 
 library(plotly)
 p <- ggplot() +
@@ -386,7 +431,21 @@ print(head(folds_probs_df))
 
 folds_probs_df$tss_name <- rownames(folds_probs_df)
 classed_diffs_info_calls <- merge(classed_diffs_info, folds_probs_df)
-write.table(classed_diffs_info_calls, file = "classed_diffs_info_calls.txt", quote = F, sep = "\t", row.names = F)
+#write.table(classed_diffs_info_calls, file = "classed_diffs_info_calls.txt", quote = F, sep = "\t", row.names = F)
+
+
+
+# build a dataframe row-by-row example
+
+library(rstackdeque)
+mystack <- rstack()
+for(i in seq(1,1000)) {
+  df_row <- data.frame(val = i, logval = log(i))
+  mystack <- insert_top(mystack, df_row)
+}
+print(mystack)
+mystack_df_conv <- as.data.frame(mystack)
+
 
 
 
